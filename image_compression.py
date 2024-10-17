@@ -42,20 +42,17 @@ class CompressionThread(QThread):
         image_ycrcb = cv2.cvtColor(self.image, cv2.COLOR_BGR2YCrCb)
         Y, Cr, Cb = cv2.split(image_ycrcb)
         
-        
         Cr_pooled = average_pooling(Cr)
         Cb_pooled = average_pooling(Cb)
         
         self.update_progress.emit(20)
 
-        
         U_Y, S_Y, Vt_Y = np.linalg.svd(Y, full_matrices=False)
         k = min(self.k_value, len(S_Y))
         Y_compressed = np.dot(U_Y[:, :k], np.dot(np.diag(S_Y[:k]), Vt_Y[:k, :]))
         
         self.update_progress.emit(50)
 
-        
         U_Cr, S_Cr, Vt_Cr = np.linalg.svd(Cr_pooled, full_matrices=False)
         U_Cb, S_Cb, Vt_Cb = np.linalg.svd(Cb_pooled, full_matrices=False)
         
@@ -66,16 +63,13 @@ class CompressionThread(QThread):
         
         self.update_progress.emit(80)
 
-        
         Cr_expanded = expand_pooled_array(Cr_compressed, Cr.shape)
         Cb_expanded = expand_pooled_array(Cb_compressed, Cb.shape)
 
-        
         Y_compressed = np.clip(Y_compressed, 0, 255).astype(np.uint8)
         Cr_expanded = np.clip(Cr_expanded, 0, 255).astype(np.uint8)
         Cb_expanded = np.clip(Cb_expanded, 0, 255).astype(np.uint8)
 
-        
         compressed_ycrcb = cv2.merge([Y_compressed, Cr_expanded, Cb_expanded])
         compressed_image = cv2.cvtColor(compressed_ycrcb, cv2.COLOR_YCrCb2BGR)
         
@@ -140,7 +134,6 @@ class ImageCompressionUI(QMainWindow):
             }
         """)
 
-        
         self.load_button = QPushButton('Load Image', self)
         self.compress_button = QPushButton('Compress', self)
         self.download_button = QPushButton('Download Compressed Image', self)
@@ -152,7 +145,6 @@ class ImageCompressionUI(QMainWindow):
         self.k_slider.setValue(50)
         self.k_label = QLabel('K value: 50')
 
-        
         self.original_image_label = QLabel(self)
         self.original_image_label.setAlignment(Qt.AlignCenter)
         self.original_image_label.setStyleSheet("border: 1px solid #555555;")
@@ -162,6 +154,7 @@ class ImageCompressionUI(QMainWindow):
 
         self.original_size_label = QLabel('Size: N/A')
         self.compressed_size_label = QLabel('Size: N/A')
+        self.mse_label = QLabel('MSE: N/A')
 
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setMaximum(100)
@@ -169,12 +162,10 @@ class ImageCompressionUI(QMainWindow):
         self.progress_bar.setFormat("%p%")
         self.progress_bar.hide()
 
-        
         main_layout = QVBoxLayout()
         image_layout = QHBoxLayout()
         control_layout = QVBoxLayout()
 
-        
         before_group = QGroupBox('Before Compression')
         before_layout = QVBoxLayout()
         before_layout.addWidget(self.original_image_label)
@@ -185,13 +176,12 @@ class ImageCompressionUI(QMainWindow):
         after_layout = QVBoxLayout()
         after_layout.addWidget(self.compressed_image_label)
         after_layout.addWidget(self.compressed_size_label)
+        after_layout.addWidget(self.mse_label)
         after_group.setLayout(after_layout)
 
-       
         image_layout.addWidget(before_group)
         image_layout.addWidget(after_group)
 
-        
         control_layout.addWidget(self.load_button)
         control_layout.addWidget(self.compress_button)
         control_layout.addWidget(self.download_button)
@@ -199,16 +189,13 @@ class ImageCompressionUI(QMainWindow):
         control_layout.addWidget(self.k_label)
         control_layout.addWidget(self.progress_bar)
 
-       
         main_layout.addLayout(image_layout)
         main_layout.addLayout(control_layout)
 
-       
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
-        
         self.load_button.clicked.connect(self.load_image)
         self.compress_button.clicked.connect(self.compress_image)
         self.download_button.clicked.connect(self.download_image)
@@ -218,12 +205,22 @@ class ImageCompressionUI(QMainWindow):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open Image File", "", "Images (*.png *.jpg *.bmp)")
         if file_name:
             self.image = cv2.imread(file_name)
+            self.image = self.resize_to_even(self.image)  # ปรับขนาดภาพให้เป็นเลขคู่
             self.display_image(self.image, self.original_image_label)
             self.original_size = os.path.getsize(file_name)
             self.update_original_size_label()
             self.compressed_image_label.clear()
             self.compressed_size_label.setText("Size: N/A")
+            self.mse_label.setText("MSE: N/A")
             self.download_button.setEnabled(False)
+
+    def resize_to_even(self, image):
+        height, width = image.shape[:2]
+        new_height = height if height % 2 == 0 else height - 1
+        new_width = width if width % 2 == 0 else width - 1
+        if new_height != height or new_width != width:
+            return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        return image
 
     def compress_image(self):
         if self.image is not None:
@@ -239,6 +236,7 @@ class ImageCompressionUI(QMainWindow):
         self.compressed_image = compressed_image
         self.display_image(self.compressed_image, self.compressed_image_label)
         self.update_compressed_size_label()
+        self.calculate_and_display_mse()
         self.progress_bar.hide()
         self.compress_button.setEnabled(True)
         self.download_button.setEnabled(True)
@@ -266,12 +264,22 @@ class ImageCompressionUI(QMainWindow):
         if self.compressed_image is not None:
             height, width = self.compressed_image.shape[:2]
             
-            # Estimate compressed file size (this is an approximation)
             compression_ratio = self.k_slider.value() / min(self.image.shape[:2])
             estimated_size = self.original_size * compression_ratio
             size_kb = estimated_size / 1024
             
             self.compressed_size_label.setText(f"Estimated Size: {width}x{height}, {size_kb:.2f} KB")
+
+    def calculate_and_display_mse(self):
+        if self.image is not None and self.compressed_image is not None:
+            mse = self.calculate_mse(self.image, self.compressed_image)
+            self.mse_label.setText(f'MSE: {mse:.2f}')
+
+    def calculate_mse(self, original, compressed):
+        original = original.astype(np.float32)
+        compressed = compressed.astype(np.float32)
+        diff = original - compressed
+        return np.mean(diff ** 2)
 
     def download_image(self):
         if self.compressed_image is not None:
